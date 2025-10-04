@@ -1,0 +1,106 @@
+version: 2.1
+
+orbs:
+  cypress: cypress-io/cypress@4
+  node: circleci/node@5
+
+workflows:
+  build_and_test:
+    jobs:
+      - install_dependencies
+      - smoke_tests:
+          requires:
+            - install_dependencies
+      - regression_tests:
+          requires:
+            - install_dependencies
+      - integration_tests:
+          requires:
+            - install_dependencies
+      - generate_reports:
+          requires:
+            - smoke_tests
+            - regression_tests
+            - integration_tests
+
+jobs:
+  install_dependencies:
+    executor: cypress/default
+    steps:
+      - checkout
+      - node/install-packages:
+          pkg-manager: npm
+      - run:
+          name: Verify Cypress
+          command: npx cypress verify
+      - run:
+          name: Build application
+          command: npm run build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  smoke_tests:
+    executor: cypress/default
+    parallelism: 2
+    steps:
+      - attach_workspace:
+          at: .
+      - cypress/run:
+          start-command: 'npm start'
+          cypress-command: 'npx cypress run --config-file cypress.config.ci.js --spec "cypress/e2e/smoke/**/*.cy.js" --browser chrome'
+          wait-on: 'http://localhost:3000'
+          store_artifacts: true
+      - store_artifacts:
+          path: cypress/screenshots
+      - store_artifacts:
+          path: cypress/videos
+
+  regression_tests:
+    executor: cypress/default
+    parallelism: 3
+    steps:
+      - attach_workspace:
+          at: .
+      - cypress/run:
+          start-command: 'npm start'
+          cypress-command: 'npx cypress run --config-file cypress.config.ci.js --spec "cypress/e2e/regression/**/*.cy.js" --browser chrome'
+          wait-on: 'http://localhost:3000'
+          store_artifacts: true
+      - store_artifacts:
+          path: cypress/screenshots
+      - store_artifacts:
+          path: cypress/videos
+
+  integration_tests:
+    executor: cypress/default
+    steps:
+      - attach_workspace:
+          at: .
+      - cypress/run:
+          start-command: 'npm start'
+          cypress-command: 'npx cypress run --config-file cypress.config.ci.js --spec "cypress/e2e/integration/**/*.cy.js" --browser chrome'
+          wait-on: 'http://localhost:3000'
+          store_artifacts: true
+      - store_artifacts:
+          path: cypress/screenshots
+      - store_artifacts:
+          path: cypress/videos
+
+  generate_reports:
+    executor: cypress/default
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Generate test reports
+          command: |
+            mkdir -p reports
+            echo "CircleCI Test Report" > reports/summary.txt
+            echo "Build Number: $CIRCLE_BUILD_NUM" >> reports/summary.txt
+            echo "Branch: $CIRCLE_BRANCH" >> reports/summary.txt
+            echo "Commit: $CIRCLE_SHA1" >> reports/summary.txt
+            echo "Date: $(date)" >> reports/summary.txt
+      - store_artifacts:
+          path: reports

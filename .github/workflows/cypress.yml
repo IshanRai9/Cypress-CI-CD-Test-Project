@@ -1,0 +1,269 @@
+name: Cypress CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of tests to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - smoke
+          - regression
+      browser:
+        description: 'Browser to test'
+        required: true
+        default: 'chrome'
+        type: choice
+        options:
+          - chrome
+          - firefox
+          - edge
+          - electron
+
+env:
+  # Cypress environment variables
+  CYPRESS_BASE_URL: http://localhost:3000
+  CYPRESS_VIDEO: false
+  CYPRESS_SCREENSHOTS_ON_RUN_FAILURE: true
+
+jobs:
+  # Install dependencies and build
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Cypress
+        run: npx cypress verify
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: npm start &
+
+      - name: Wait for application to start
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Cache Cypress binary
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/Cypress
+          key: cypress-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+  # Smoke tests - quick essential tests
+  smoke-tests:
+    needs: install
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'smoke' || github.event.inputs.test_type == 'all' || github.event.inputs.test_type == ''
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cypress smoke tests
+        uses: cypress-io/github-action@v6
+        with:
+          browser: ${{ matrix.browser }}
+          start: npm start
+          wait-on: 'http://localhost:3000'
+          wait-on-timeout: 120
+          config-file: cypress.config.ci.js
+          spec: 'cypress/e2e/smoke/**/*.cy.js'
+          record: false
+        env:
+          CYPRESS_testType: smoke
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload smoke test screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smoke-screenshots-${{ matrix.browser }}
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+  # Regression tests - comprehensive testing
+  regression-tests:
+    needs: install
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'regression' || github.event.inputs.test_type == 'all' || github.event.inputs.test_type == ''
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox, edge]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cypress regression tests
+        uses: cypress-io/github-action@v6
+        with:
+          browser: ${{ matrix.browser }}
+          start: npm start
+          wait-on: 'http://localhost:3000'
+          wait-on-timeout: 120
+          config-file: cypress.config.ci.js
+          spec: 'cypress/e2e/regression/**/*.cy.js'
+          record: false
+        env:
+          CYPRESS_testType: regression
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload regression test screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: regression-screenshots-${{ matrix.browser }}
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+  # Integration tests - end-to-end workflows  
+  integration-tests:
+    needs: install
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'all' || github.event.inputs.test_type == ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cypress integration tests
+        uses: cypress-io/github-action@v6
+        with:
+          browser: chrome
+          start: npm start
+          wait-on: 'http://localhost:3000'
+          wait-on-timeout: 120
+          config-file: cypress.config.ci.js
+          spec: 'cypress/e2e/integration/**/*.cy.js'
+          record: false
+        env:
+          CYPRESS_testType: integration
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload integration test screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: integration-screenshots
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+  # Generate and upload test reports
+  test-reports:
+    needs: [smoke-tests, regression-tests, integration-tests]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate test report
+        run: |
+          echo "# Cypress Test Results" > test-summary.md
+          echo "Date: $(date)" >> test-summary.md
+          echo "" >> test-summary.md
+          echo "## Test Execution Summary" >> test-summary.md
+          echo "- **Branch:** ${{ github.ref_name }}" >> test-summary.md
+          echo "- **Commit:** ${{ github.sha }}" >> test-summary.md
+          echo "- **Workflow:** ${{ github.workflow }}" >> test-summary.md
+          echo "- **Run ID:** ${{ github.run_id }}" >> test-summary.md
+
+      - name: Upload test summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-summary
+          path: test-summary.md
+
+  # Performance and accessibility tests
+  performance-tests:
+    needs: install
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_type == 'all' || github.event.inputs.test_type == ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lighthouse CI
+        run: |
+          npm install -g @lhci/cli@0.12.x
+          lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Security scanning
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run npm audit
+        run: npm audit --audit-level moderate
+
+      - name: CodeQL Analysis
+        uses: github/codeql-action/init@v2
+        with:
+          languages: javascript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+  # Deployment (conditional)
+  deploy:
+    needs: [smoke-tests, regression-tests, integration-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "🚀 Deploying to staging environment..."
+          echo "All tests passed! Ready for production deployment."
+
+      - name: Notify deployment
+        run: |
+          echo "📧 Sending deployment notification..."
+          echo "Application deployed successfully to staging."

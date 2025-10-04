@@ -1,0 +1,161 @@
+# GitLab CI/CD Pipeline for Cypress Tests
+image: cypress/browsers:latest
+
+stages:
+  - install
+  - test
+  - report
+  - deploy
+
+variables:
+  CYPRESS_BASE_URL: http://localhost:3000
+  CYPRESS_VIDEO: "false"
+  CYPRESS_SCREENSHOTS_ON_RUN_FAILURE: "true"
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  CYPRESS_CACHE_FOLDER: "$CI_PROJECT_DIR/cache/Cypress"
+
+# Cache configuration
+cache:
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm
+    - cache/Cypress
+    - node_modules
+
+# Install dependencies
+install_dependencies:
+  stage: install
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - npx cypress verify
+    - npm run build
+  artifacts:
+    paths:
+      - node_modules
+      - public
+    expire_in: 1 hour
+
+# Smoke tests
+smoke_tests:
+  stage: test
+  dependencies:
+    - install_dependencies
+  parallel:
+    matrix:
+      - BROWSER: [chrome, firefox]
+  script:
+    - npm start &
+    - npx wait-on http://localhost:3000 --timeout 60000
+    - npx cypress run --browser $BROWSER --config-file cypress.config.ci.js --spec "cypress/e2e/smoke/**/*.cy.js"
+  artifacts:
+    when: on_failure
+    paths:
+      - cypress/screenshots
+      - cypress/results
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Regression tests
+regression_tests:
+  stage: test
+  dependencies:
+    - install_dependencies
+  parallel:
+    matrix:
+      - BROWSER: [chrome, firefox]
+  script:
+    - npm start &
+    - npx wait-on http://localhost:3000 --timeout 60000
+    - npx cypress run --browser $BROWSER --config-file cypress.config.ci.js --spec "cypress/e2e/regression/**/*.cy.js"
+  artifacts:
+    when: on_failure
+    paths:
+      - cypress/screenshots
+      - cypress/results
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Integration tests
+integration_tests:
+  stage: test
+  dependencies:
+    - install_dependencies
+  script:
+    - npm start &
+    - npx wait-on http://localhost:3000 --timeout 60000
+    - npx cypress run --browser chrome --config-file cypress.config.ci.js --spec "cypress/e2e/integration/**/*.cy.js"
+  artifacts:
+    when: on_failure
+    paths:
+      - cypress/screenshots
+      - cypress/results
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Generate test reports
+test_reports:
+  stage: report
+  dependencies:
+    - smoke_tests
+    - regression_tests
+    - integration_tests
+  script:
+    - echo "Generating test reports..."
+    - mkdir -p reports
+    - echo "Test execution completed on $(date)" > reports/summary.txt
+    - echo "Pipeline ID: $CI_PIPELINE_ID" >> reports/summary.txt
+    - echo "Commit: $CI_COMMIT_SHA" >> reports/summary.txt
+  artifacts:
+    paths:
+      - reports
+    expire_in: 30 days
+  when: always
+
+# Deploy to staging
+deploy_staging:
+  stage: deploy
+  script:
+    - echo "🚀 Deploying to staging environment..."
+    - echo "Application URL: https://staging.example.com"
+  environment:
+    name: staging
+    url: https://staging.example.com
+  only:
+    - main
+  when: manual
+
+# Deploy to production
+deploy_production:
+  stage: deploy
+  script:
+    - echo "🚀 Deploying to production environment..."
+    - echo "Application URL: https://example.com"
+  environment:
+    name: production
+    url: https://example.com
+  only:
+    - main
+  when: manual
+  allow_failure: false
+
+# Scheduled tests (nightly)
+nightly_tests:
+  extends: regression_tests
+  only:
+    - schedules
+  script:
+    - npm start &
+    - npx wait-on http://localhost:3000 --timeout 60000
+    - npx cypress run --browser chrome --config-file cypress.config.ci.js
+    - echo "Nightly test execution completed"
